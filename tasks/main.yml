@@ -1,0 +1,130 @@
+- name: Set up sshd keys (1/2)
+  ansible.builtin.file:
+    mode: "0700"
+    path: /root/.ssh
+    state: directory
+
+- name: Set up sshd keys (2/2)
+  notify: Restart ssh service
+  ansible.builtin.copy:
+    mode: "0600"
+    dest: /root/.ssh/authorized_keys
+    content: "{{ ssh_root_keys }}"
+
+- name: Set up sshd_config
+  register: sshd_config
+  ansible.builtin.copy:
+    src: sshd_config
+    dest: /etc/ssh/sshd_config
+    validate: /usr/sbin/sshd -T -f %s
+
+- name: Restart sshd service
+  when: sshd_config.changed
+  become: true
+  ansible.builtin.systemd:
+    name: sshd
+    state: restarted
+
+- name: Set up chrony.conf
+  when: ntp_enabled
+  ansible.builtin.template:
+    src: chrony.conf.j2
+    dest: /etc/chrony.conf
+
+- name: chronyd service
+  become: true
+  ansible.builtin.systemd:
+    name: chronyd
+    enabled: "{{ ntp_enabled }}"
+    state: "{{ 'restarted' if ntp_enabled else 'disabled' }}"
+
+- name: Reduce bootloader timeout
+  register: grub
+  ansible.builtin.lineinfile:
+    path: /etc/default/grub
+    regexp: "^GRUB_TIMEOUT="
+    line: "GRUB_TIMEOUT={{ grub_timeout }}"
+
+- name: Check firmware type
+  register: uefi
+  ansible.builtin.stat:
+    path: /sys/firmware/efi
+
+- name: Update bootloader for BIOS
+  when: grub.changed and not uefi.stat.exists
+  ansible.builtin.command: grub2-mkconfig -o /boot/grub2/grub.cfg
+
+- name: Update bootloader for UEFI
+  when: grub.changed and uefi.stat.exists
+  ansible.builtin.command: grub2-mkconfig -o /boot/efi/EFI/*/grub.cfg
+
+- name: Upgrade all packages
+  ansible.builtin.dnf:
+    name: "*"
+    state: latest
+
+- name: Install base packages
+  ansible.builtin.dnf:
+    name: "{{ packages }}"
+    state: present
+
+- name: Install dnf-automatic
+  when: autoupdate_enabled
+  ansible.builtin.dnf:
+    name: dnf-automatic
+    state: present
+
+- name: Set up automatic security updates (1/2)
+  when: autoupdate_enabled
+  ansible.builtin.ini_file:
+    path: /etc/dnf/automatic.conf
+    section: commands
+    option: upgrade_type
+    value: "{{ autoupdate_type }}"
+
+- name: Set up automatic security updates (2/2)
+  when: autoupdate_enabled
+  ansible.builtin.systemd:
+    name: dnf-automatic-install.timer
+    state: started
+    enabled: true
+
+- name: Enforce SELinux
+  ansible.builtin.selinux:
+    policy: "{{ selinux_policy }}"
+    state: "{{ selinux_state }}"
+
+- name: Check if swapfile exists
+  when: swapfile_enabled
+  ansible.builtin.stat:
+    path: /swapfile
+  register: swap
+
+- name: Set up swapfile (1/5)
+  ansible.builtin.command: "fallocate -l {{ swapfile_size }} /swapfile"
+  when: not swap.stat.exists and swapfile_enabled
+
+- name: Set up swapfile (2/5)
+  ansible.builtin.file:
+    dest: /swapfile
+    mode: 0600
+  when: not swap.stat.exists and swapfile_enabled
+
+- name: Set up swapfile (3/5)
+  ansible.builtin.command: mkswap /swapfile
+  when: not swap.stat.exists and swapfile_enabled
+
+- name: Set up swapfile (4/5)
+  ansible.builtin.command: swapon /swapfile
+  when: not swap.stat.exists and swapfile_enabled
+
+- name: Set up swapfile (5/5)
+  ansible.builtin.mount:
+    src: /swapfile
+    name: "none"
+    fstype: "swap"
+    opts: "sw,nofail"
+    dump: "0"
+    passno: "0"
+    state: present
+  when: not swap.stat.exists and swapfile_enabled
