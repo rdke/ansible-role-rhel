@@ -28,7 +28,7 @@ ntp_servers: |
 selinux_policy: targeted
 selinux_state: enforcing
 swapfile_enabled: true
-swapfile_size: 2048M
+swapfile_size: 2G
 autoupdate_enabled: true
 autoupdate_type: security
 grub_timeout: 1
